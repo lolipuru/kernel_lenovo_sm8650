@@ -33,3 +33,4 @@ obj-$(CONFIG_RMI4_CORE)		+= rmi4/
 
 obj-$(CONFIG_INPUT_FINGERPRINT)		+=  fingerprint/
 obj-$(CONFIG_HQ_PEN_HALL)		+=  hall/
+obj-$(CONFIG_AWINIC_HAPTIC_HV)	+= haptic_hv/
