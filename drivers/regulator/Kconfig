@@ -1695,4 +1695,11 @@ config VIRTIO_REGULATOR
 	  regulator for pass through peripheral devices via regulator backend in
 	  host.
 
+config AW3750X_POWER
+	tristate "Power Support for AW3750X"
+	depends on LEDS_CLASS && I2C
+	help
+		this option enables support for the aw3750x power connected
+		through I2C. Say Y to enable support for the aw3750x
+
 endif
