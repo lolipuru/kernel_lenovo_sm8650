@@ -550,6 +550,13 @@ config KINECTICS_XR_NORDIC
 	   this also parses the gpios and interrupts from device tree and sets
 	   the gpios and interrupt handler for handling the interrupt.
 
+config LENOVO_BL_BOOSTER
+	tristate "Lenovo LCD Backlight driver for i2c backlight chip like ktz8866"
+	depends on I2C
+	default n
+	help
+	  This option enables support for the LCD backlight using bkl chip.
+
 source "drivers/misc/rtimd-i2c/Kconfig"
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"

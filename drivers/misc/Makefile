@@ -71,3 +71,4 @@ obj-$(CONFIG_QCOM_SMCI_PROXY) 	+= smci_proxy.o
 obj-$(CONFIG_BOOTMARKER_PROXY) 	+= bootmarker_proxy.o
 obj-$(CONFIG_KINECTICS_XR_NORDIC) += kxrctrl/
 obj-$(CONFIG_VD628x)      += vd628x/
+obj-$(CONFIG_LENOVO_BL_BOOSTER)	+= lenovo-bl-booster.o
