@@ -5,7 +5,7 @@
  */
 
 #define pr_fmt(fmt)	"UCSI: %s: " fmt, __func__
-
+#define DEBUG
 #include <clocksource/arm_arch_timer.h>
 #include <linux/device.h>
 #include <linux/ipc_logging.h>
@@ -17,7 +17,8 @@
 #include <linux/soc/qcom/pmic_glink.h>
 #include <linux/usb/typec.h>
 #include <linux/usb/ucsi_glink.h>
-
+#include <linux/of_gpio.h>
+#include <linux/delay.h>
 #include "ucsi.h"
 
 /* PPM specific definitions */
@@ -41,6 +42,14 @@
 		ipc_log_string(ucsi_ipc_log, fmt, ##__VA_ARGS__); \
 		pr_debug(fmt, ##__VA_ARGS__); \
 	} while (0)
+
+#ifdef CONFIG_ARCH_KIRBY
+unsigned int cc_port_num = 0;
+EXPORT_SYMBOL(cc_port_num);
+unsigned int cc_port_num_1 = 0;
+unsigned int cc_port_num_2 = 0;
+#define SWITCH_DPMD_GPIO    359
+#endif
 
 struct ucsi_read_buf_req_msg {
 	struct pmic_glink_hdr	hdr;
@@ -103,6 +112,39 @@ struct remoteproc_ts {
 	u32	ss;
 	u32	dec;
 };
+/* kirby code for KIRBY-1104 by huwl5 at 2024/05/16 - start */
+#ifdef CONFIG_ARCH_KIRBY
+struct ucsi_dev_con_status {
+	u8 * val;					/*receive ucsi device data*/
+	u8  conn_partner_flag;		/*partner type verify flags*/
+	u8  partner_usb;			/*partner type is USB*/
+	u8  con;					/*the status of which port is changing?. C1:con = 1, C2:con = 2,no port:con = 0*/
+	u16 change;					/*partner connect status change*/
+	u16 flags;					/*partner device description flag*/
+	u8  conn_partner_type;		/*connect partner device type*/
+	u8  conn_power_mode;		/*connect partner power mode*/
+};
+
+enum partner_connect_type{
+	CONNECT_OTG_DEVICE = 0,
+	CONNECT_PC_DEVICE,
+	CONNECT_USB_HUB_DEVICE,
+	CONNECT_DP_DEVICE,
+	CONNECT_AC_ADAPTER,
+	CONNECT_ANALOG_AUDIO,
+	CONNECT_UNKNOWN_DEVICE,
+	CONNECT_DEVICE_NULL,
+	CONNECT_DEVICE_NOT_CHANGE,
+};
+
+int C1_d_present = 0;
+int C2_d_present = 0;
+int con_now = 0;
+EXPORT_SYMBOL(C1_d_present);
+EXPORT_SYMBOL(C2_d_present);
+EXPORT_SYMBOL(con_now);
+#endif
+/* kirby code for KIRBY-1104 by huwl5 at 2024/05/16 - end */
 
 static void *ucsi_ipc_log;
 static RAW_NOTIFIER_HEAD(ucsi_glink_notifier);
@@ -180,12 +222,127 @@ static void ucsi_log(const char *prefix, unsigned int offset, u8 *buf,
 
 static int handle_ucsi_read_ack(struct ucsi_dev *udev, void *data, size_t len)
 {
+#ifdef CONFIG_ARCH_KIRBY
+	struct ucsi_dev_con_status dev_con_st;
+	u8 partner_dev_type = CONNECT_DEVICE_NULL;
+	static int gpio_value = 0;
+#endif
+
 	if (len != sizeof(udev->rx_buf)) {
 		pr_err("Incorrect received length %zu expected %zu\n", len,
 			sizeof(udev->rx_buf));
 		atomic_set(&udev->rx_valid, 0);
 		return -EINVAL;
 	}
+
+#ifdef CONFIG_ARCH_KIRBY
+	dev_con_st.val= (u8*)data;
+	dev_con_st.change = dev_con_st.val[29]<<8 | dev_con_st.val[28];
+	dev_con_st.flags= dev_con_st.val[31]<<8 | dev_con_st.val[30];
+	dev_con_st.con = dev_con_st.val[16]/2;
+	dev_con_st.conn_partner_flag = UCSI_CONSTAT_PARTNER_FLAGS(dev_con_st.flags);
+	dev_con_st.conn_partner_type = UCSI_CONSTAT_PARTNER_TYPE(dev_con_st.flags);
+	dev_con_st.conn_power_mode = UCSI_CONSTAT_PWR_OPMODE(dev_con_st.flags);
+
+	if (dev_con_st.conn_partner_flag & UCSI_CONSTAT_PARTNER_FLAG_USB)
+		dev_con_st.partner_usb = true;
+	else
+		dev_con_st.partner_usb = false;
+
+	if (dev_con_st.con != 0 && dev_con_st.change != 0 && dev_con_st.partner_usb == 1) {
+		if ((dev_con_st.conn_partner_type == UCSI_CONSTAT_PARTNER_TYPE_DFP || dev_con_st.conn_partner_type == UCSI_CONSTAT_PARTNER_TYPE_UFP)
+			&& (dev_con_st.conn_power_mode == UCSI_CONSTAT_PWR_OPMODE_TYPEC1_5 || dev_con_st.conn_power_mode == UCSI_CONSTAT_PWR_OPMODE_DEFAULT || dev_con_st.conn_power_mode == UCSI_CONSTAT_PWR_OPMODE_TYPEC3_0)) {
+			partner_dev_type = CONNECT_OTG_DEVICE;
+		} else if ((dev_con_st.conn_partner_type == UCSI_CONSTAT_PARTNER_TYPE_DFP && dev_con_st.conn_power_mode == UCSI_CONSTAT_PWR_OPMODE_PD)
+			|| (dev_con_st.conn_partner_type == 0 && dev_con_st.conn_power_mode == UCSI_CONSTAT_PWR_OPMODE_TYPEC1_5)
+			|| (dev_con_st.conn_partner_type == 0 && dev_con_st.conn_power_mode == UCSI_CONSTAT_PWR_OPMODE_TYPEC3_0)
+			|| (dev_con_st.conn_partner_type == 0 && dev_con_st.conn_power_mode == UCSI_CONSTAT_PWR_OPMODE_DEFAULT)) {
+			partner_dev_type = CONNECT_PC_DEVICE;
+		} else if (dev_con_st.conn_partner_type == UCSI_CONSTAT_PARTNER_TYPE_CABLE_AND_UFP &&
+			(dev_con_st.conn_power_mode != UCSI_CONSTAT_PWR_OPMODE_NONE && dev_con_st.conn_power_mode != UCSI_CONSTAT_PWR_OPMODE_BC)) {
+			partner_dev_type = CONNECT_USB_HUB_DEVICE;
+		} else if (dev_con_st.conn_partner_type == UCSI_CONSTAT_PARTNER_TYPE_UFP && dev_con_st.conn_power_mode == UCSI_CONSTAT_PWR_OPMODE_PD) {
+			partner_dev_type = CONNECT_DP_DEVICE;
+		} else if (dev_con_st.conn_partner_type == UCSI_CONSTAT_PARTNER_TYPE_AUDIO) {
+			partner_dev_type = CONNECT_ANALOG_AUDIO;
+		} else {
+			partner_dev_type = CONNECT_UNKNOWN_DEVICE;
+		}
+	} else if (dev_con_st.con != 0 && dev_con_st.change != 0 && dev_con_st.partner_usb == 0) {
+		if (dev_con_st.conn_partner_type == UCSI_CONSTAT_PARTNER_TYPE_CABLE_AND_UFP && dev_con_st.conn_power_mode == UCSI_CONSTAT_PWR_OPMODE_PD) {
+			partner_dev_type = CONNECT_DP_DEVICE;
+		} else if ((dev_con_st.conn_partner_type == UCSI_CONSTAT_PARTNER_TYPE_DFP || dev_con_st.conn_partner_type == UCSI_CONSTAT_PARTNER_TYPE_UFP)
+			&& dev_con_st.conn_power_mode == UCSI_CONSTAT_PWR_OPMODE_PD) {
+			partner_dev_type = CONNECT_AC_ADAPTER;
+		} else if (dev_con_st.conn_partner_type == UCSI_CONSTAT_PARTNER_TYPE_AUDIO) {
+			partner_dev_type = CONNECT_ANALOG_AUDIO;
+		} else {
+			partner_dev_type = CONNECT_UNKNOWN_DEVICE;
+		}
+	} else {
+		partner_dev_type = CONNECT_DEVICE_NOT_CHANGE;
+	}
+
+	if (dev_con_st.con!=0 && dev_con_st.change != 0 && dev_con_st.flags == 0)
+		partner_dev_type = CONNECT_DEVICE_NULL;
+
+	switch (partner_dev_type) {
+	case CONNECT_OTG_DEVICE:
+	case CONNECT_PC_DEVICE:
+	case CONNECT_USB_HUB_DEVICE:
+		if (dev_con_st.con == 1)
+			C1_d_present = 1;
+		else if (dev_con_st.con == 2)
+			C2_d_present = 1;
+
+		break;
+	case CONNECT_DP_DEVICE:
+		if (dev_con_st.con == 1)
+			C1_d_present = 0;
+
+		break;
+	case CONNECT_ANALOG_AUDIO:
+	case CONNECT_AC_ADAPTER:
+		if (dev_con_st.con == 1)
+			C1_d_present = 0;
+		else if (dev_con_st.con == 2)
+			C2_d_present = 0;
+
+		break;
+	case CONNECT_DEVICE_NULL:
+		if (dev_con_st.con == 1)
+			C1_d_present = 0;
+		else if (dev_con_st.con == 2)
+			C2_d_present = 0;
+
+		break;
+	case CONNECT_DEVICE_NOT_CHANGE:
+	case CONNECT_UNKNOWN_DEVICE:
+		break;
+	default:
+		pr_debug("port error!");
+		break;
+	}
+
+	if (C1_d_present == 1 && C2_d_present == 0) {
+		gpio_direction_output(SWITCH_DPMD_GPIO, 0);
+		mdelay(10);
+	} else if (C1_d_present == 0 && C2_d_present == 1) {
+		gpio_direction_output(SWITCH_DPMD_GPIO, 1);
+		mdelay(10);
+	} else if (C1_d_present == 1 && C2_d_present == 1) {
+		gpio_direction_output(SWITCH_DPMD_GPIO, 0);
+		mdelay(10);
+	}
+
+	gpio_value = gpio_get_value(SWITCH_DPMD_GPIO);
+
+	cc_port_num_2 = dev_con_st.con;
+	cc_port_num = cc_port_num_1 | cc_port_num_2;
+	pr_info("[LENOVO_UCSI] port_num = %d, change = 0x%04X, flag = 0x%04X, partner_type = %d, usb = %d, opmode = %d, dev_type = %d, c1_data = %d, c2_data = %d, gpio = %d\n",
+		dev_con_st.con, dev_con_st.change, dev_con_st.flags, dev_con_st.conn_partner_type, dev_con_st.partner_usb,
+		dev_con_st.conn_power_mode, partner_dev_type, C1_d_present, C2_d_present, gpio_value);
+#endif
 
 	memcpy(&udev->rx_buf, data, sizeof(udev->rx_buf));
 	if (udev->rx_buf.ret_code) {
@@ -259,8 +416,13 @@ static int handle_ucsi_notify(struct ucsi_dev *udev, void *data, size_t len)
 	}
 
 	con_num = UCSI_CCI_CONNECTOR(cci);
-	pr_debug("con_num: %u num_connectors: %u\n", con_num,
-		udev->ucsi->cap.num_connectors);
+
+#ifdef CONFIG_ARCH_KIRBY
+	cc_port_num_1= con_num;
+        cc_port_num = cc_port_num_1 | cc_port_num_2;
+	pr_info("con_num: %u num_connectors: %u port_num:%u\n", con_num,
+		udev->ucsi->cap.num_connectors, cc_port_num_1);
+#endif
 
 	if (con_num && con_num <= udev->ucsi->cap.num_connectors &&
 		udev->ucsi->connector) {
@@ -482,6 +644,10 @@ static int ucsi_qti_read(struct ucsi *ucsi, unsigned int offset,
 	struct ucsi_read_buf_req_msg ucsi_buf = { { 0 } };
 	int rc;
 
+#ifdef CONFIG_ARCH_KIRBY
+	u8 *P = (u8 *)val;
+#endif
+
 	if (!validate_ucsi_msg(offset, val_len))
 		return -EINVAL;
 
@@ -522,6 +688,11 @@ static int ucsi_qti_read(struct ucsi *ucsi, unsigned int offset,
 	atomic_set(&udev->rx_valid, 0);
 	ucsi_log("read:", offset, (u8 *)val, val_len);
 	ucsi_qti_notify(udev, offset, val, val_len);
+	
+#ifdef CONFIG_ARCH_KIRBY
+	if (val_len == 4 && P[0] != 0)
+		con_now = P[0]/2;
+#endif
 
 out:
 	mutex_unlock(&udev->read_lock);
