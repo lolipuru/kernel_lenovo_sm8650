@@ -55,6 +55,9 @@
 #include "debug.h"
 #include "xhci.h"
 #include "debug-ipc.h"
+/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - start */
+#include "../typec/ucsi/ucsi.h"
+/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - end */
 
 #define NUM_LOG_PAGES   12
 
@@ -223,6 +226,7 @@
 
 /* USB repeater */
 #define USB_REPEATER_V1		0x1
+static int otg_state = 0;
 
 enum dbm_reg {
 	DBM_EP_CFG,
@@ -644,6 +648,7 @@ struct dwc3_msm {
 	phys_addr_t		ebc_desc_addr;
 	bool			dis_sending_cm_l1_quirk;
 	bool			use_eusb2_phy;
+	bool			force_gen1;
 	bool			cached_dis_u1_entry_quirk;
 	bool			cached_dis_u2_entry_quirk;
 	int			refcnt_dp_usb;
@@ -686,6 +691,19 @@ struct dwc3_msm {
 #define USB_SSPHY_1P8_VOL_MIN		1800000 /* uV */
 #define USB_SSPHY_1P8_VOL_MAX		1800000 /* uV */
 #define USB_SSPHY_1P8_HPM_LOAD		23000	/* uA */
+/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - start */
+#ifdef CONFIG_ARCH_KIRBY
+extern int C1_d_present;
+extern int C2_d_present;
+extern int con_now ;
+enum usb_role c2_role;
+enum usb_role c1_role;
+static struct class *ot_class;
+static struct device *devc1c2;
+static int dwc3_start_stop_host(struct dwc3_msm *mdwc, bool start);
+static int lanes_flag = 0;
+#endif
+/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - end */
 
 /* unfortunately, dwc3 core doesn't manage multiple dwc3 instances for trace */
 void *dwc_trace_ipc_log_ctxt;
@@ -1590,6 +1608,51 @@ int msm_dwc3_reset_dbm_ep(struct usb_ep *ep)
 	return 0;
 }
 EXPORT_SYMBOL(msm_dwc3_reset_dbm_ep);
+
+static char __chg_cmdline[COMMAND_LINE_SIZE*2];
+static char *chg_cmdline = __chg_cmdline;
+const char *chg_get_cmd(void)
+{
+	struct device_node * of_chosen = NULL;
+	char *bootargs = NULL;
+
+	if (__chg_cmdline[0] != 0)
+		return chg_cmdline;
+
+	of_chosen = of_find_node_by_path("/chosen");
+	if (of_chosen) {
+		bootargs = (char *)of_get_property(
+					of_chosen, "bootargs", NULL);
+		if (bootargs){
+			strncpy(__chg_cmdline, bootargs, 1000);
+                }
+        }
+	return chg_cmdline;
+}
+
+void mt_get_otg_enable(void)
+{
+	char otg_str[64] = {0};
+	char *ptr = NULL, *ptr_e = NULL;
+	char keyword[] = "usb_otg_dis=";
+	int size = 0;
+
+	ptr = strstr(chg_get_cmd(), keyword);
+	if (ptr != 0) {
+		ptr_e = strstr(ptr, " ");
+		if (ptr_e == 0)
+			return;
+
+		size = ptr_e - (ptr + strlen(keyword));
+		if (size <= 0)
+			return;
+		strncpy(otg_str, ptr + strlen(keyword), size);
+		otg_str[size] = '\0';
+
+		if (!strncmp(otg_str, "1", strlen("1")))
+			otg_state = 1;
+	}
+}
 
 static int __dwc3_msm_ebc_ep_queue(struct dwc3_ep *dep, struct dwc3_request *req)
 {
@@ -3714,6 +3777,13 @@ static void dwc3_dis_sleep_mode(struct dwc3_msm *mdwc)
 	dwc3_msm_write_reg(mdwc->base, DWC3_GUCTL1, reg);
 }
 
+/* Force Gen1 speed on Gen2 controller if required */
+static void dwc3_force_gen1(struct dwc3_msm *mdwc)
+{
+	if (mdwc->force_gen1 && (mdwc->ip == DWC31_IP))
+		dwc3_msm_write_reg_field(mdwc->base, DWC3_LLUCTL, DWC3_LLUCTL_FORCE_GEN1, 1);
+}
+
 static int dwc3_msm_power_collapse_por(struct dwc3_msm *mdwc)
 {
 	struct dwc3 *dwc = NULL;
@@ -3763,6 +3833,7 @@ static int dwc3_msm_power_collapse_por(struct dwc3_msm *mdwc)
 			mdwc3_dis_sending_cm_l1(mdwc);
 	}
 
+	dwc3_force_gen1(mdwc);
 	return 0;
 }
 
@@ -5264,6 +5335,13 @@ static enum usb_role dwc3_msm_usb_role_switch_get_role(struct usb_role_switch *s
 static int dwc3_msm_set_role(struct dwc3_msm *mdwc, enum usb_role role)
 {
 	enum usb_role cur_role;
+	/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - start */
+	#ifdef CONFIG_ARCH_KIRBY
+	char *uen1[2] = {"DOU_USB=usb2port",NULL};
+	char *uen2[2] = {"DOU_USB=usb1or0port",NULL};
+	int ret=0;
+	#endif
+	/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - end */
 
 	if (!dwc3_msm_role_allowed(mdwc, role))
 		return -EINVAL;
@@ -5273,6 +5351,34 @@ static int dwc3_msm_set_role(struct dwc3_msm *mdwc, enum usb_role role)
 
 	dbg_log_string("cur_role:%s new_role:%s refcnt:%d\n", dwc3_msm_usb_role_string(cur_role),
 				dwc3_msm_usb_role_string(role), mdwc->refcnt_dp_usb);
+	/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - start */
+	#ifdef CONFIG_ARCH_KIRBY
+	pr_info("[LENOVO_UCSI] cur_role = %s, new_role = %s, present = [%d %d]", dwc3_msm_usb_role_string(cur_role),dwc3_msm_usb_role_string(role),
+		C1_d_present, C2_d_present);
+	if(con_now == 2)
+		c2_role =role;
+	else if(con_now == 1)
+		c1_role =role;
+
+	if(C1_d_present == 1 && con_now == 2)
+	{
+		role = cur_role;
+		pr_info("c1 is on,role = cur_role,set_role:%s",dwc3_msm_usb_role_string(role));
+	}else if(C2_d_present == 1 && C1_d_present == 0 && con_now == 1 && role == 0)
+	{
+		role = c2_role;
+		pr_info("c2 is on,c1 out , role = c2_role,set_role:%s",dwc3_msm_usb_role_string(role));
+	}
+	if(C1_d_present == 1 &&C2_d_present == 1)
+	{
+		kobject_uevent_env(&devc1c2->kobj,KOBJ_CHANGE,uen1);
+		pr_info("[LENOVO_UCSI] kobject_uevent_env+++uen1:%s",kobject_name(&devc1c2->kobj));
+	}else{
+		kobject_uevent_env(&devc1c2->kobj,KOBJ_CHANGE,uen2);
+		pr_info("[LENOVO_UCSI] kobject_uevent_env+++uen2:%s",kobject_name(&devc1c2->kobj));
+	}
+	#endif
+	/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - end */
 
 	/*
 	 * For boot up without USB cable connected case, don't check
@@ -5281,6 +5387,18 @@ static int dwc3_msm_set_role(struct dwc3_msm *mdwc, enum usb_role role)
 	 */
 	if (mdwc->drd_state != DRD_STATE_UNDEFINED && cur_role == role) {
 		dbg_log_string("no USB role change");
+		/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - start */
+		#ifdef CONFIG_ARCH_KIRBY
+		if (c1_role == 1 && con_now == 1 && C2_d_present == 1 && lanes_flag == 0){
+			ret = dwc3_start_stop_host(mdwc, false);
+			if (ret){
+				pr_info("+++++++stop host error");
+				mutex_unlock(&mdwc->role_switch_mutex);
+			}
+		dwc3_start_stop_host(mdwc, true);
+		pr_info("dwc3_start_stop_host++++++++++++");}
+		#endif
+		/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - end */
 		mutex_unlock(&mdwc->role_switch_mutex);
 		return 0;
 	}
@@ -5395,6 +5513,38 @@ static ssize_t mode_store(struct device *dev, struct device_attribute *attr,
 }
 
 static DEVICE_ATTR_RW(mode);
+
+static ssize_t otg_enable_store(struct device *dev, struct device_attribute *attr,
+                const char *buf, size_t count)
+{
+	bool value;
+	int ret;
+
+	ret = strtobool(buf, &value);
+	if (!ret) {
+		if(value){
+                    otg_state = 0;
+                }else{
+                    otg_state = 1;
+                }
+		return count;
+	}
+	return ret;
+}
+
+static ssize_t otg_enable_show(struct device *dev, struct device_attribute *attr,
+                char *buf)
+{
+
+        if (0 == otg_state)
+               return snprintf(buf, PAGE_SIZE, "y\n");
+        else
+               return snprintf(buf, PAGE_SIZE, "n\n");
+
+}
+
+static DEVICE_ATTR_RW(otg_enable);
+
 static void msm_dwc3_perf_vote_work(struct work_struct *w);
 
 /* This node only shows max speed supported dwc3 and it should be
@@ -5640,6 +5790,7 @@ static struct attribute *dwc3_msm_attrs[] = {
 	&dev_attr_bus_vote.attr,
 	&dev_attr_enable_l1_suspend.attr,
 	&dev_attr_xhci_test.attr,
+	&dev_attr_otg_enable.attr,
 	&dev_attr_dynamic_disable.attr,
 	NULL
 };
@@ -5787,6 +5938,11 @@ int dwc3_msm_set_dp_mode(struct device *dev, bool dp_connected, int lanes)
 {
 	struct dwc3_msm *mdwc = dev_get_drvdata(dev);
 	int ret = 0;
+
+#ifdef CONFIG_ARCH_KIRBY
+	lanes_flag = lanes;
+	dev_dbg(dev, "dp_connected lanes_flag is %d\n", lanes_flag);
+#endif
 
 	if (!mdwc || !mdwc->dwc3) {
 		dev_err(dev, "dwc3-msm is not initialized yet.\n");
@@ -6181,6 +6337,7 @@ static int dwc3_msm_core_init(struct dwc3_msm *mdwc)
 	if (!mdwc->xhci_pm_ops)
 		goto free_dwc_pm_ops;
 
+	dwc3_force_gen1(mdwc);
 	dwc3_msm_notify_event(dwc, DWC3_GSI_EVT_BUF_ALLOC, 0);
 	pm_runtime_set_autosuspend_delay(dwc->dev, 0);
 	pm_runtime_allow(dwc->dev);
@@ -6581,6 +6738,8 @@ static int dwc3_msm_parse_params(struct platform_device *pdev,  struct device_no
 	of_property_read_u32(node, "qcom,pm-qos-latency",
 				&mdwc->pm_qos_latency);
 
+	mdwc->force_gen1 = of_property_read_bool(node, "qcom,force-gen1");
+
 	diag_node = of_find_compatible_node(NULL, NULL, "qcom,msm-imem-diag-dload");
 	if (!diag_node)
 		pr_warn("diag: failed to find diag_dload imem node\n");
@@ -6627,6 +6786,13 @@ static int dwc3_msm_probe(struct platform_device *pdev)
 	struct dwc3_msm *mdwc;
 	int ret = 0, i;
 	bool disable_wakeup;
+	/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - start */
+	#ifdef CONFIG_ARCH_KIRBY
+	ot_class = class_create(THIS_MODULE, "douusb");
+	devc1c2 = device_create(ot_class, NULL, MKDEV(0, 0), NULL, "usbc1c2");
+	pr_err("devices_create usbc1c2\n");
+	#endif
+	/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - end */
 
 	mdwc = devm_kzalloc(&pdev->dev, sizeof(*mdwc), GFP_KERNEL);
 	if (!mdwc)
@@ -6818,6 +6984,13 @@ put_dwc3:
 		icc_put(mdwc->icc_paths[i]);
 
 err:
+	/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - start */
+	#ifdef CONFIG_ARCH_KIRBY
+	device_del(devc1c2);
+	class_destroy(ot_class);
+	pr_err("err:device_del(devc1c2);class_destroy(ot_class);\n");
+	#endif
+	/* kirby code for KIRBY-184 by wumz6 at 2024/04/30 - end */
 	destroy_workqueue(mdwc->sm_usb_wq);
 	destroy_workqueue(mdwc->dwc3_wq);
 	usb_put_redriver(mdwc->redriver);
@@ -7254,6 +7427,9 @@ static int dwc3_otg_start_host(struct dwc3_msm *mdwc, int on)
 	int ret = 0;
 	struct dwc3 *dwc = platform_get_drvdata(mdwc->dwc3);
 	u32 reg;
+
+	if(otg_state != 0)
+             return 1;
 
 	if (on) {
 		dev_dbg(mdwc->dev, "%s: turn on host\n", __func__);
@@ -8072,6 +8248,8 @@ static struct platform_driver dwc3_msm_driver = {
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("DesignWare USB3 MSM Glue Layer");
 MODULE_SOFTDEP("pre: phy-generic phy-msm-snps-hs phy-msm-ssusb-qmp eud");
+
+__setup("androidboot.otgdis=", get_otg_state);
 
 static int dwc3_msm_init(void)
 {
