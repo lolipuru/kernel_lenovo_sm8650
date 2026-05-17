@@ -196,13 +196,18 @@ static int eusb2_repeater_get_version(struct usb_repeater *ur)
 static void eusb2_repeater_create_debugfs(struct eusb2_repeater *er)
 {
 	er->usb2_crossover = U8_MAX;
+	#ifdef CONFIG_ARCH_LAPIS
+	er->iusb2 = 0xd;
+	#else
 	er->iusb2 = U8_MAX;
+	#endif
 	er->res_fsdif = U8_MAX;
 	er->hsdisc = U8_MAX;
 	er->squelch_u = U8_MAX;
 	er->usb2_slew = U8_MAX;
 	er->usb2_equ = U8_MAX;
 	er->usb2_preem = U8_MAX;
+	#endif
 	er->hs_comp_current = U8_MAX;
 	er->eusb_slew = U8_MAX;
 	er->eusb_equ = U8_MAX;
