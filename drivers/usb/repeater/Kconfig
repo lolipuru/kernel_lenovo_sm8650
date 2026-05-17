@@ -34,4 +34,12 @@ config I2C_EUSB2_REPEATER
 	  for USB HS/FS/LS functionality where eUSB2 repeater is used.
 
 	  To compile this driver as a module, choose M here.
+
+config PTN3222_REPEATER
+	tristate "NXP PMIC usb repeater driver"
+	depends on USB_REPEATER && SPMI
+	select REGMAP_SPMI
+	help
+	  Enable this to support the USB EUSB2 REPEATER PTN3222
+
 endmenu
