@@ -487,6 +487,25 @@ config BACKLIGHT_LED
 	  If you have a LCD backlight adjustable by LED class driver, say Y
 	  to enable this driver.
 
+config BACKLIGHT_KTZ8866
+	tristate "Backlight Driver for KTZ8866"
+	depends on I2C && BACKLIGHT_CLASS_DEVICE
+	help
+	  If you have a LCD backlight adjustable by LED class driver, say Y
+	  to enable this driver.
+
+config BACKLIGHT_KTZ8866A
+    tristate "KTZ8866A Backlight"
+    depends on I2C && BACKLIGHT_CLASS_DEVICE
+    help
+      If you have a KTZ8866A say Y to enable the backlight driver.
+
+config BACKLIGHT_KTZ8866B
+    tristate "KTZ8866B Backlight"
+    depends on I2C && BACKLIGHT_CLASS_DEVICE
+    help
+      If you have a KTZ8866B say Y to enable the backlight driver.
+
 endif # BACKLIGHT_CLASS_DEVICE
 
 endmenu

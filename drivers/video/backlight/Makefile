@@ -60,3 +60,6 @@ obj-$(CONFIG_BACKLIGHT_WM831X)		+= wm831x_bl.o
 obj-$(CONFIG_BACKLIGHT_ARCXCNN) 	+= arcxcnn_bl.o
 obj-$(CONFIG_BACKLIGHT_RAVE_SP)		+= rave-sp-backlight.o
 obj-$(CONFIG_BACKLIGHT_LED)		+= led_bl.o
+obj-$(CONFIG_BACKLIGHT_KTZ8866)         += ktz8866.o
+obj-$(CONFIG_BACKLIGHT_KTZ8866A)     += ktz8866a.o
+obj-$(CONFIG_BACKLIGHT_KTZ8866B)     += ktz8866b.o
