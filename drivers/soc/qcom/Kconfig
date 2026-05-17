@@ -1346,4 +1346,14 @@ config QCOM_KERNEL_BASED_RESTORE
 	  Requires hibernation support in the kernel.
 	  If not sure, say N.
 
+config QCOM_FSA4480_SUB_I2C
+	tristate "Fairchild FSA4480 SUB chip with I2C"
+	select REGMAP_I2C
+	depends on I2C
+	help
+	  Support for the Fairchild FSA4480 SUB IC switch chip controlled
+	  using I2C. This driver provides common support
+	  for accessing the device, switching between USB and Audio
+	  modes, changing orientation.
+
 endmenu
