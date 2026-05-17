@@ -504,4 +504,16 @@ config KHADAS_MCU_FAN_THERMAL
 	  If you say yes here you get support for the FAN controlled
 	  by the Microcontroller found on the Khadas VIM boards.
 
+config LENOVO_THERMAL_CONTROL
+	tristate "Lenovo Thermal Control Driver"
+	depends on THERMAL
+	help
+          Support for ther Lenovo Thermal Control Driver.
+
+config LENOVO_SYS_TEMP
+	tristate "Lenovo Thermal Temperature Support"
+	depends on THERMAL && THERMAL_OF
+	help
+          Support for ther Lenovo Thermal Temperature Support.
+
 endif
